@@ -19,6 +19,7 @@
 #include "postgres.h"
 
 #include <unistd.h>
+#include <utils/timeout.h>
 
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -265,7 +266,7 @@ ftsMain(int argc, char *argv[])
 	pqsignal(SIGINT, ReqFtsFullScan);		/* request full-scan */
 	pqsignal(SIGTERM, die);
 	pqsignal(SIGQUIT, quickdie); /* we don't do any ftsprobe specific cleanup, just use the standard. */
-	pqsignal(SIGALRM, handle_sig_alarm);
+	InitializeTimeouts(); /* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);

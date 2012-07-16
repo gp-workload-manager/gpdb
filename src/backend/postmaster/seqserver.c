@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <netinet/in.h>
+#include <utils/timeout.h>
 
 #include "miscadmin.h"
 #include "libpq/pqsignal.h"
@@ -427,7 +428,7 @@ SeqServerMain(int argc, char *argv[])
 	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, die);
 	pqsignal(SIGQUIT, quickdie); /* we don't do any seq-server specific cleanup, just use the standard. */
-	pqsignal(SIGALRM, handle_sig_alarm);
+	InitializeTimeouts(); /* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);

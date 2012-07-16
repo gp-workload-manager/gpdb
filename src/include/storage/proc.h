@@ -16,6 +16,7 @@
 #ifndef _PROC_H_
 #define _PROC_H_
 
+#include "access/xlogdefs.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
 #include "storage/spin.h"
@@ -213,22 +214,22 @@ typedef struct PROC_HDR
  * writer and autovacuum launcher are launched only after it has exited (4
  * slots).
  *
- * FileRep Process uses 
- *			a) 10 slots on Primary 
+ * FileRep Process uses
+ *			a) 10 slots on Primary
  *					1) Sender
  *					2) Receiver Ack
- *					3) Consumer Ack 
- *					4) Recovery 
- *					5) Resync Manager 
+ *					3) Consumer Ack
+ *					4) Recovery
+ *					5) Resync Manager
  *					6) Resync Worker 1
  *					7) Resync Worker 2
  *					8) Resync Worker 3
  *					9) Resync Worker 4
  *				   10) Verification
- * 
- *			b) 6 slots on Mirror 
- *					1) Receiver 
- *					2) Consumer 
+ *
+ *			b) 6 slots on Mirror
+ *					1) Receiver
+ *					2) Consumer
  *					3) Consumer Writer
  *					4) Consumer Append Only
  *					5) Consumer Verification
@@ -242,8 +243,6 @@ extern int	DeadlockTimeout;
 extern int	StatementTimeout;
 extern bool log_lock_waits;
 extern int IdleSessionGangTimeout;
-
-extern volatile bool cancel_from_timeout;
 
 
 /*
@@ -263,13 +262,13 @@ extern int	ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable);
 extern PGPROC *ProcWakeup(PGPROC *proc, int waitStatus);
 extern void ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock);
 extern void LockWaitCancel(void);
+extern void CheckDeadLock(void);
+extern bool IsWaitingForLock(void);
+extern void LockErrorCleanup(void);
 
 extern void ProcWaitForSignal(void);
 extern void ProcSendSignal(int pid);
 
-extern bool enable_sig_alarm(int delayms, bool is_statement_timeout);
-extern bool disable_sig_alarm(bool is_statement_timeout);
-extern void handle_sig_alarm(SIGNAL_ARGS);
 extern void EnableClientWaitTimeoutInterrupt(void);
 extern bool DisableClientWaitTimeoutInterrupt(void);
 

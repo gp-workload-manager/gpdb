@@ -98,6 +98,9 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/syscache.h"
+#include "utils/timeout.h"
+#include "utils/timestamp.h"
+#include "utils/tqual.h"
 #include "cdb/cdbvars.h"
 
 
@@ -427,7 +430,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	pqsignal(SIGINT, SIG_IGN);
 	pqsignal(SIGTERM, avl_sigterm_handler);
 	pqsignal(SIGQUIT, avl_quickdie);
-	pqsignal(SIGALRM, SIG_IGN);
+	InitializeTimeouts();		/* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, avl_sigusr1_handler);
@@ -474,6 +477,11 @@ AutoVacLauncherMain(int argc, char *argv[])
 
 		/* Prevents interrupts while cleaning up */
 		HOLD_INTERRUPTS();
+
+		/* Forget any pending QueryCancel or timeout request */
+		QueryCancelPending = false;
+		disable_all_timeouts(false);
+		QueryCancelPending = false;		/* again in case timeout occurred */
 
 		/* Report the error to the server log */
 		EmitErrorReport();
@@ -1009,7 +1017,7 @@ rebuild_database_list(Oid newdb)
 		current_time = GetCurrentTimestamp();
 
 		/*
-		 * move the elements from the array into the dllist, setting the 
+		 * move the elements from the array into the dllist, setting the
 		 * next_worker while walking the array
 		 */
 		for (i = 0; i < nelems; i++)
@@ -1493,7 +1501,7 @@ AutoVacWorkerMain(int argc, char *argv[])
 	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, die);
 	pqsignal(SIGQUIT, quickdie);
-	pqsignal(SIGALRM, handle_sig_alarm);
+	InitializeTimeouts();		/* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
@@ -1572,7 +1580,7 @@ AutoVacWorkerMain(int argc, char *argv[])
 		MyWorkerInfo->wi_proc = MyProc;
 
 		/* insert into the running list */
-		SHMQueueInsertBefore(&AutoVacuumShmem->av_runningWorkers, 
+		SHMQueueInsertBefore(&AutoVacuumShmem->av_runningWorkers,
 							 &MyWorkerInfo->wi_links);
 		/*
 		 * remove from the "starting" pointer, so that the launcher can start

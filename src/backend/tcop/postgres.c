@@ -78,6 +78,9 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+//#include "utils/snapmgr.h"
+#include "utils/timeout.h"
+#include "utils/timestamp.h"
 #include "utils/datum.h"
 #include "utils/debugbreak.h"
 #include "utils/session_state.h"
@@ -3189,9 +3192,9 @@ start_xact_command(void)
 		/* Set statement timeout running, if any */
 		/* NB: this mustn't be enabled until we are within an xact */
 		if (StatementTimeout > 0 && Gp_role != GP_ROLE_EXECUTE)
-			enable_sig_alarm(StatementTimeout, true);
+			enable_timeout_after(STATEMENT_TIMEOUT, StatementTimeout);
 		else
-			cancel_from_timeout = false;
+			disable_timeout(STATEMENT_TIMEOUT, false);
 
 		xact_started = true;
 	}
@@ -3203,7 +3206,7 @@ finish_xact_command(void)
 	if (xact_started)
 	{
 		/* Cancel any active statement timeout before committing */
-		disable_sig_alarm(true);
+		disable_timeout(STATEMENT_TIMEOUT, false);
 
 		/* Now commit the command */
 		ereport(DEBUG3,
@@ -3685,7 +3688,7 @@ ProcessInterrupts(const char* filename, int lineno)
 				ereport(ERROR,
 						(errcode(ERRCODE_GP_OPERATION_CANCELED),
 						 errmsg("canceling MPP operation")));
-			else if (cancel_from_timeout)
+			else if (get_timeout_indicator(STATEMENT_TIMEOUT))
 				ereport(ERROR,
 						(errcode(ERRCODE_QUERY_CANCELED),
 						 errmsg("canceling statement due to statement timeout")));
@@ -4473,8 +4476,8 @@ PostgresMain(int argc, char *argv[],
 		if (IsUnderPostmaster)
 			pqsignal(SIGQUIT, quickdie); /* hard crash time */
 		else
-			pqsignal(SIGQUIT, die); /* cancel current query and exit */
-		pqsignal(SIGALRM, handle_sig_alarm); /* timeout conditions */
+			pqsignal(SIGQUIT, die);		/* cancel current query and exit */
+		InitializeTimeouts();		/* establishes SIGALRM handler */
 
 		/*
 		 * Ignore failure to write to frontend. Note: if frontend closes
@@ -4699,10 +4702,10 @@ PostgresMain(int argc, char *argv[],
 
 		/*
 		 * Forget any pending QueryCancel request, since we're returning to
-		 * the idle loop anyway, and cancel the statement timer if running.
+		 * the idle loop anyway, and cancel any active timeout requests.
 		 */
 		QueryCancelPending = false;
-		disable_sig_alarm(true);
+		disable_all_timeouts(false);
 		QueryCancelPending = false;		/* again in case timeout occurred */
 		QueryFinishPending = false;
 

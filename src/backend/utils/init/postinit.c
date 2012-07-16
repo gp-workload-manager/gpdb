@@ -40,6 +40,7 @@
 #include "storage/backendid.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
@@ -57,6 +58,8 @@
 #include "utils/resscheduler.h"
 #include "utils/sharedsnapshot.h"
 #include "utils/syscache.h"
+#include "utils/timeout.h"
+#include "utils/tqual.h"
 #include "pgstat.h"
 #include "utils/session_state.h"
 
@@ -67,6 +70,7 @@ static void CheckMyDatabase(const char *name, bool am_superuser);
 static void ProcessRoleGUC(void);
 static void InitCommunication(void);
 static void ShutdownPostgres(int code, Datum arg);
+static void StatementTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 
@@ -240,8 +244,7 @@ PerformAuthentication(Port *port)
 	 * during authentication.  Since we're inside a transaction and might do
 	 * database access, we have to use the statement_timeout infrastructure.
 	 */
-	if (!enable_sig_alarm(AuthenticationTimeout * 1000, true))
-		elog(FATAL, "could not set timer for authorization timeout");
+	enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
 
 	/*
 	 * Now perform authentication exchange.
@@ -251,8 +254,7 @@ PerformAuthentication(Port *port)
 	/*
 	 * Done with authentication.  Disable the timeout, and log if needed.
 	 */
-	if (!disable_sig_alarm(true))
-		elog(FATAL, "could not disable timer for authorization timeout");
+	disable_timeout(STATEMENT_TIMEOUT, false);
 
 	if (Log_connections)
 	{
@@ -618,6 +620,16 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	ProcSignalInit(MyBackendId);
 
 	/*
+	 * Also set up timeout handlers needed for backend operation.  We need
+	 * these in every case except bootstrap.
+	 */
+	if (!bootstrap)
+	{
+		RegisterTimeout(DEADLOCK_TIMEOUT, CheckDeadLock);
+		RegisterTimeout(STATEMENT_TIMEOUT, StatementTimeoutHandler);
+	}
+
+	/*
 	 * bufmgr needs another initialization call too
 	 */
 	InitBufferPoolBackend();
@@ -961,12 +973,12 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	/* report this backend in the PgBackendStatus array */
 	if (!bootstrap)
 		pgstat_bestart();
-		
-	/* 
-     * MPP package setup 
+
+	/*
+     * MPP package setup
      *
      * Primary function is to establish connctions to the qExecs.
-     * This is SKIPPED when the database is in bootstrap mode or 
+     * This is SKIPPED when the database is in bootstrap mode or
      * Is not UnderPostmaster.
      */
     if (!bootstrap && IsUnderPostmaster)
@@ -975,7 +987,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		on_proc_exit( cdb_cleanup, 0 );
     }
 
-    /* 
+    /*
      * MPP SharedSnapshot Setup
 	 */
 	if (Gp_role == GP_ROLE_DISPATCH)
@@ -984,10 +996,10 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
     else if (Gp_segment == -1 && Gp_role == GP_ROLE_EXECUTE && !Gp_is_writer)
     {
-		/* 
+		/*
 		 * Entry db singleton QE is a user of the shared snapshot -- not a creator.
 		 * The lookup will occur once the distributed snapshot has been received.
-		 */	
+		 */
 		lookupSharedSnapshot("Entry DB Singleton", "Query Dispatcher", gp_session_id);
     }
     else if (Gp_role == GP_ROLE_EXECUTE)
@@ -1002,7 +1014,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 			 * NOTE: This assumes that the Slot has already been
 			 *       allocated by the writer.  Need to make sure we
 			 *       always allocate the writer qExec first.
-			 */			 			
+			 */
 			lookupSharedSnapshot("Reader qExec", "Writer qExec", gp_session_id);
 		}
 	}
@@ -1117,6 +1129,20 @@ ShutdownPostgres(int code, Datum arg)
 	 * them explicitly.
 	 */
 	LockReleaseAll(USER_LOCKMETHOD, true);
+}
+
+
+/*
+ * STATEMENT_TIMEOUT handler: trigger a query-cancel interrupt.
+ */
+static void
+StatementTimeoutHandler(void)
+{
+#ifdef HAVE_SETSID
+	/* try to signal whole process group */
+	kill(-MyProcPid, SIGINT);
+#endif
+	kill(MyProcPid, SIGINT);
 }
 
 

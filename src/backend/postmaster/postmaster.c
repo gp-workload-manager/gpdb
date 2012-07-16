@@ -142,6 +142,7 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resscheduler.h"
+#include "utils/timeout.h"
 
 #include "cdb/cdbgang.h"                /* cdbgang_parse_gpqeid_params */
 #include "cdb/cdbtm.h"
@@ -543,6 +544,7 @@ static bool StopServices(int excludeFlags, int signal);
 static const char *GetServerProcessTitle(int pid);
 static void sigusr1_handler(SIGNAL_ARGS);
 static void dummy_handler(SIGNAL_ARGS);
+static void StartupPacketTimeoutHandler(void);
 static void CleanupBackend(int pid, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
@@ -1837,7 +1839,7 @@ checkPgDir2(const char *dir)
  * O_DIRECT flag requires buffer to be OS/FS block aligned.
  * Best to have it IO Block alligned henece using BLCKSZ
  */
-static bool 
+static bool
 checkIODataDirectory(void)
 {
 	Assert(DataDir);
@@ -1862,7 +1864,7 @@ checkIODataDirectory(void)
 
 	errno = 0;
 	bool failure = false;
-	
+
 	fd = BasicOpenFile(filename, O_RDWR | PG_O_DIRECT | O_EXCL,
                                            S_IRUSR | S_IWUSR);
 	do
@@ -1886,8 +1888,8 @@ checkIODataDirectory(void)
 					strncpy(dataAligned, FTS_PROBE_MAGIC_STRING, magic_len);
 					if (write(fd, dataAligned, BLCKSZ) != BLCKSZ)
 					{
-						ereport(LOG, (errcode_for_file_access(), 
-									  errmsg("FTS: could not write file \"%s\" : %m", 
+						ereport(LOG, (errcode_for_file_access(),
+									  errmsg("FTS: could not write file \"%s\" : %m",
 											 filename)));
 						failure = true;
 					}
@@ -1899,8 +1901,8 @@ checkIODataDirectory(void)
 				 * Some other error
 				 */
 				failure = true;
-				ereport(LOG, (errcode_for_file_access(), 
-						errmsg("FTS: could not open file \"%s\": %m", 
+				ereport(LOG, (errcode_for_file_access(),
+						errmsg("FTS: could not open file \"%s\": %m",
 							filename)));
 			}
 			break;
@@ -1909,7 +1911,7 @@ checkIODataDirectory(void)
 		int len = read(fd, dataAligned, BLCKSZ);
 		if (len != BLCKSZ)
 		{
-			ereport(LOG, (errcode_for_file_access(), 
+			ereport(LOG, (errcode_for_file_access(),
 					errmsg("FTS: could not read file \"%s\" "
 						"(actual bytes read %d, required: %d): %m",
 						filename, len, BLCKSZ)));
@@ -1938,8 +1940,8 @@ checkIODataDirectory(void)
 		 */
 		if (write(fd, dataAligned, BLCKSZ) != BLCKSZ)
 		{
-			ereport(LOG, (errcode_for_file_access(), 
-					errmsg("FTS: could not write file \"%s\" : %m", 
+			ereport(LOG, (errcode_for_file_access(),
+					errmsg("FTS: could not write file \"%s\" : %m",
 					filename)));
 			failure = true;
 			break;
@@ -1956,7 +1958,7 @@ checkIODataDirectory(void)
 		 * This is done to cover for cases like:
 		 * 1] FTS detects corruption/read failure on the file, reports to Master
 		 * 2] Triggers failover to mirror
-		 * 3] But if the file stays around, when it transitions back to Primary 
+		 * 3] But if the file stays around, when it transitions back to Primary
 		 *    would again detect this corrupted file and again trigger failover.
 		 * To avoid such scenarios remove the file.
 		 */
@@ -2389,7 +2391,7 @@ ServerLoop(void)
 			checkPgDir2("pg_clog");
 			checkPgDir2("pg_multixact/members");
 			checkPgDir2("pg_multixact/offsets");
-			checkPgDir2("pg_xlog/archive_status");	
+			checkPgDir2("pg_xlog/archive_status");
 		}
 
 #ifdef USE_TEST_UTILS
@@ -3202,8 +3204,8 @@ processTransitionRequest_getMirrorStatus(void)
 							  "estimatedCompletionTimeSecondsSinceEpoch:" INT64_FORMAT "\n"
 							  "totalResyncObjectCount:%d\n"
 							  "curResyncObjectCount:%d\n",
-			 getMirrorModeLabel(pm_mode), 
-			 getSegmentStateLabel(s_state), 
+			 getMirrorModeLabel(pm_mode),
+			 getSegmentStateLabel(s_state),
 			 getDataStateLabel(d_state),
 			 getFaultTypeLabel(f_type),
 			 databaseStatus,
@@ -3514,12 +3516,12 @@ processPrimaryMirrorTransitionRequest(Port *port, void *pkt)
              */
             args->dataState = DataStateInResync;
 			args->forceFullResync = TRUE;
-			
-			/* 
+
+			/*
 			 * The system may have been configured to use a new filespace for transaction files
 			 * when this segment was down. Now when the segment comes up, we need to make sure
 			 * to reload all the info abt the location of txn files from the flat files and hence
-			 * make sure that the mirror starts using the logs at the right location 
+			 * make sure that the mirror starts using the logs at the right location
 			 */
 			primaryMirrorPopulateFilespaceInfo();
         }
@@ -3665,10 +3667,10 @@ processPrimaryMirrorTransitionQuery(Port *port, void *pkt)
 			f_type = FaultTypeNet;
 		}
 	}
-	
+
 	if (gp_log_fts >= GPVARS_VERBOSITY_VERBOSE)
 	{
-		ereport(LOG, (errmsg("FTS: Probe Request (mode: %s) (segmentState: %s) (dataState: %s) (fault: %s)", 
+		ereport(LOG, (errmsg("FTS: Probe Request (mode: %s) (segmentState: %s) (dataState: %s) (fault: %s)",
 			getMirrorModeLabel(pm_mode), getSegmentStateLabel(s_state), getDataStateLabel(d_state), getFaultTypeLabel(f_type))));
 	}
 
@@ -3681,7 +3683,7 @@ processPrimaryMirrorTransitionQuery(Port *port, void *pkt)
 	 */
 	if (fts_diskio_check)
 	{
-		if (pm_mode == PMModePrimarySegment && 
+		if (pm_mode == PMModePrimarySegment &&
 			f_type == FaultTypeNotInitialized)
 		{
 			bool failure = checkIODataDirectory();
@@ -3689,7 +3691,7 @@ processPrimaryMirrorTransitionQuery(Port *port, void *pkt)
 			{
 				elog(LOG, "FTS_PROBE for IO Check: FAILED");
 				s_state = SegmentStateFault;
-				f_type = FaultTypeIO; 
+				f_type = FaultTypeIO;
 
 				FileRep_SetSegmentState(s_state, f_type);
 			}
@@ -4695,7 +4697,7 @@ do_reaper()
 
 				if (ServiceStartable(subProc))
 				{
-					if (StartupPidsAllZero() && 
+					if (StartupPidsAllZero() &&
 						!FatalError && Shutdown == NoShutdown)
 					{
 						/*
@@ -5356,7 +5358,7 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 								 (int) StartupPass3PID)));
 		signal_child(StartupPass3PID, (SendStop ? SIGSTOP : SIGQUIT));
 	}
-	
+
 	/* Take care of the startup process too */
 	if (pid == StartupPass4PID)
 		StartupPass4PID = 0;
@@ -5787,7 +5789,7 @@ static PMState StateMachineCheck_WaitPreBgWriter(void)
     Assert(pmState == PM_CHILD_STOP_WAIT_PREBGWRITER );
 
     /* waiting for pre-bgwriter services to exit */
-    bool moveToNextState = 
+    bool moveToNextState =
     		(!ServiceProcessesExist(/* excludeFlags */ PMSUBPROC_FLAG_STOP_AFTER_BGWRITER) &&
     		 CheckpointerPID == 0);
     return moveToNextState ? (pmState+1) : pmState;
@@ -6129,7 +6131,7 @@ PostmasterStateMachine(void)
         {
             if ( DO_STATE_MACHINE_LOGGING )
                 elog(LOG, "Postmaster State Machine: no change from %s", gPmStateLabels[pmState]);
-                
+
             /* current state was not completed ... quit and wait to be called again */
             break;
         }
@@ -6526,7 +6528,7 @@ BackendInitialize(Port *port)
 	 */
 	pqsignal(SIGTERM, authdie);
 	pqsignal(SIGQUIT, authdie);
-	pqsignal(SIGALRM, authdie);
+	InitializeTimeouts();		/* establishes SIGALRM handler */
 	PG_SETMASK(&StartupBlockSig);
 
 	/*
@@ -6569,10 +6571,20 @@ BackendInitialize(Port *port)
 	/*
 	 * Ready to begin client interaction.  We will give up and exit(0) after a
 	 * time delay, so that a broken client can't hog a connection
-	 * indefinitely.  PreAuthDelay doesn't count against the time limit.
+	 * indefinitely.  PreAuthDelay and any DNS interactions above don't count
+	 * against the time limit.
+	 *
+	 * Note: AuthenticationTimeout is applied here while waiting for the
+	 * startup packet, and then again in InitPostgres for the duration of any
+	 * authentication operations.  So a hostile client could tie up the
+	 * process for nearly twice AuthenticationTimeout before we kick him off.
+	 *
+	 * Note: because PostgresMain will call InitializeTimeouts again, the
+	 * registration of STARTUP_PACKET_TIMEOUT will be lost.  This is okay
+	 * since we never use it again after this function.
 	 */
-	if (!enable_sig_alarm(AuthenticationTimeout * 1000, false))
-		elog(FATAL, "could not set timer for authorization timeout");
+	RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
+	enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
 
 	/*
 	 * Receive the startup packet (which might turn out to be a cancel request
@@ -6610,8 +6622,7 @@ BackendInitialize(Port *port)
 	 * Done with authentication.  Disable timeout, and prevent SIGTERM/SIGQUIT
 	 * again until backend startup is complete.
 	 */
-	if (!disable_sig_alarm(false))
-		elog(FATAL, "could not disable timer for authorization timeout");
+	disable_timeout(STARTUP_PACKET_TIMEOUT, false);
 	PG_SETMASK(&BlockSig);
 
 	if (Log_connections)
@@ -7030,7 +7041,7 @@ internal_forkexec(int argc, char *argv[], Port *port)
 /* This should really be in a header file */
 NON_EXEC_STATIC void
 PerfmonMain(int argc, char *argv[]);
-#endif 
+#endif
 
 /*
  * SubPostmasterMain -- Get the fork/exec'd process into a state equivalent
@@ -7572,6 +7583,20 @@ sigusr1_handler(SIGNAL_ARGS)
 	errno = save_errno;
 }
 
+/*
+ * SIGTERM or SIGQUIT while processing startup packet.
+ * Clean up and exit(1).
+ *
+ * XXX: possible future improvement: try to send a message indicating
+ * why we are disconnecting.  Problem is to be sure we don't block while
+ * doing so, nor mess up SSL initialization.  In practice, if the client
+ * has wedged here, it probably couldn't do anything with the message anyway.
+ */
+static void
+startup_die(SIGNAL_ARGS)
+{
+	proc_exit(1);
+}
 
 /*
  * Dummy signal handler
@@ -7586,6 +7611,17 @@ static void
 dummy_handler(SIGNAL_ARGS)
 {
 }
+
+/*
+ * Timeout while processing startup packet.
+ * As for startup_die(), we clean up and exit(1).
+ */
+static void
+StartupPacketTimeoutHandler(void)
+{
+	proc_exit(1);
+}
+
 
 /*
  * RandomSalt
