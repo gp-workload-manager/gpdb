@@ -1,79 +1,64 @@
-src/tools/pgindent/README
+pgindent'ing Greenplum Code
+============================
+Currently, pgindent is run against GPDB before major releases (as does Postgres).
 
-pgindent
-========
+It has also run by some developers between releases to clean up code in certain
+directories, such as `src/backend/access/appendonly` and `src/backend/cdb`:
+https://github.com/greenplum-db/gpdb/pull/3384
+https://github.com/greenplum-db/gpdb/pull/3400
+https://github.com/greenplum-db/gpdb/pull/3423
 
-This can format all PostgreSQL *.c and *.h files, but excludes *.y, and
-*.l files.
+Ideally, all GPDB code should be kept pgindent'ed consistently, but currently it
+is not. The reason for this is that GPDB is composed of several types of code:
+1. Code originating from Postgres 8.3
+2. Code originating from Postgres 8.4
+3. Code that was cherry-picked from a newer version of Postgres
+4. Code that was purely written for GPDB
+5. A Frankenstein-like mix of code
+6. Other
 
-1) Change directory to the top of the build tree.
+To further complicate matters, pgindent formatting rules have changed between
+Postgres releases and the current version of the pgindent binary in the
+GPDB repository was actually cherry-picked from 9.1.
 
-2) Download the typedef file from the buildfarm:
+Because there are plans to merge commits from newer versions of Postgres into
+GPDB, all code should be kept pgident'ed using the corresponding version of
+pgindent, e.g. code originating from Postgres 8.3 should be pgindent'ed using
+an 8.3 pgindent binary so that there are fewer merge conflicts when commits from
+Postgres 8.4 are cherry-picked on top of it.
+For example, `src/backend/main/main.c` is formatted with pgindent 8.3 rules
+because it originated from Postgres 8.3.
 
-	wget -O src/tools/pgindent/typedefs.list http://buildfarm.postgresql.org/cgi-bin/typedefs.pl
-
-3) Remove all derived files (pgindent has trouble with one of the flex macros):
-
-	gmake maintainer-clean
-
-4) Run pgindent:
-
-	find . -name '*.[ch]' -type f -print | \
-	egrep -v -f src/tools/pgindent/exclude_file_patterns | \
-	xargs -n100 pgindent src/tools/pgindent/typedefs.list
-
-5) Remove any files that generate errors and restore their original
-   versions.
-
-6) Do a full test build:
-
-	run configure
-	# stop is only necessary if it's going to install in a location with an
-	# already running server
-	pg_ctl stop
-	gmake -C src install
-	gmake -C contrib install
-	gmake installcheck-world
+Although there is no clear answer, pgindent'ing code is a good practice in
+general if done understanding the above constraints.
 
 
----------------------------------------------------------------------------
+How to Run pgindent on Greenplum code
+=====================================
 
-We have standardized on NetBSD's indent.  We have fixed a few bugs which
-requre the NetBSD source to be patched with indent.bsd.patch patch.  A
-fully patched version is available at ftp://ftp.postgresql.org/pub/dev.
+For the reasons mentioned above, the pgindent binaries have been removed from
+Greenplum and the below practice is recommended instead.
 
-GNU indent, version 2.2.6, has several problems, and is not recommended.
-These bugs become pretty major when you are doing >500k lines of code.
-If you don't believe me, take a directory and make a copy.  Run pgindent
-on the copy using GNU indent, and do a diff -r. You will see what I
-mean. GNU indent does some things better, but mangles too.
+1. Determine which version of Postgres the GPDB code you are pgindent'ing
+originates from.
+2. Download that version of the Postgres code.
+3. Run pgindent by following the `src/tools/pgindent/README` of the downloaded
+Postgres code, but use the `src/tools/pgindent/typedefs.list` provided with GPDB.
 
-Notes about excluded files:
+For example, running the latest version of the Postgres pgindent tool against
+`src/backend/access/appendonly/aosegfiles.c` will produce no diffs because
+that file is following the latest pgindent rules:
+```bash
+~/workspace/postgres/src/tools/pgindent/pgindent ~/workspace/gpdb/src/tools/pgindent/typedefs.list ~workspace/gpdb/src/backend/access/appendonly/aosegfiles.c
+```
 
-src/include/storage/s_lock.h is excluded because it contains assembly code
-that pgindent tends to mess up.
+However, running it against `src/backend/main/main.c` will produce diffs:
+```bash
+~/workspace/postgres/src/tools/pgindent/pgindent ~/workspace/gpdb/src/tools/pgindent/typedefs.list ~workspace/gpdb/src/backend/main/main.c
+```
 
-src/include/snowball/libstemmer/ and src/backend/snowball/libstemmer/
-are excluded because those files are imported from an external project,
-not maintained locally, and are machine-generated anyway.
 
-src/interfaces/ecpg/test/expected/ is excluded to avoid breaking the ecpg
-regression tests.  Several *.h files are included in regression output so
-should not be changed.
-
----------------------------------------------------------------------------
-
-Obsolete typedef list creation instructions:
---------------------------------------------
-
-To use pgindent:
-
-1) Build the source tree with _debug_ symbols and all possible configure options
-
-2) Install to /usr/local/pgsql
-
-3) Install all contrib modules
-
-4) Save a list of typedefs by running:
-
-	src/tools/find_typedef /usr/local/pgsql/bin /usr/local/pgsql/lib > /tmp/pgtypedefs
+Updating typedefs.list
+======================
+If any new data structures were added to the GPDB code, it is recommended to
+update typedefs.list and make a commit to the GPDB repo.
