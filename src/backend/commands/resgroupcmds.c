@@ -506,6 +506,28 @@ GetResGroupCapabilities(Relation rel, Oid groupId, ResGroupCaps *resgroupCaps)
 	}
 }
 
+static ResourceOwner
+defaultResourceOwner_Acquire(const char *defaultOwnerName)
+{
+	ResourceOwner owner = NULL;
+	if (CurrentResourceOwner == NULL)
+	{
+		owner = ResourceOwnerCreate(NULL, defaultOwnerName);
+		CurrentResourceOwner = owner;
+	}
+	return owner;
+}
+
+static void
+defaultResourceOwner_Release(ResourceOwner owner)
+{
+	if (owner)
+	{
+		CurrentResourceOwner = NULL;
+		ResourceOwnerDelete(owner);
+	}
+}
+
 /*
  * Get resource group id for a role in pg_authid.
  *
@@ -528,11 +550,7 @@ GetResGroupIdForRole(Oid roleid)
 	 * to cave the code of cache part, we provide a resource owner here if no
 	 * existing
 	 */
-	if (CurrentResourceOwner == NULL)
-	{
-		owner = ResourceOwnerCreate(NULL, "GetResGroupIdForRole");
-		CurrentResourceOwner = owner;
-	}
+	owner = defaultResourceOwner_Acquire("GetResGroupIdForRole");
 
 	rel = heap_open(AuthIdRelationId, AccessShareLock);
 
@@ -574,11 +592,7 @@ GetResGroupIdForRole(Oid roleid)
 	if (!OidIsValid(groupId))
 		groupId = InvalidOid;
 
-	if (owner)
-	{
-		CurrentResourceOwner = NULL;
-		ResourceOwnerDelete(owner);
-	}
+	defaultResourceOwner_Release(owner);
 
 	return groupId;
 }
@@ -599,6 +613,8 @@ GetResGroupIdForName(char *name, LOCKMODE lockmode)
 	HeapTuple	tuple;
 	Oid			rsgid;
 
+	ResourceOwner owner = defaultResourceOwner_Acquire("GetResGroupIdForName");
+
 	rel = heap_open(ResGroupRelationId, lockmode);
 
 	/* SELECT oid FROM pg_resgroup WHERE rsgname = :1 */
@@ -617,6 +633,8 @@ GetResGroupIdForName(char *name, LOCKMODE lockmode)
 
 	systable_endscan(scan);
 	heap_close(rel, lockmode);
+
+	defaultResourceOwner_Release(owner);
 
 	return rsgid;
 }
